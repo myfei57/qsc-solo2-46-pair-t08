@@ -148,6 +148,153 @@ class DispatchFlowTests(unittest.TestCase):
         self.assertEqual([entry["action"] for entry in payload["data"]], ["boot"])
 
 
+class RegistryApiTests(unittest.TestCase):
+    """The swap-and-revise scenario from the site ledger, end to end."""
+
+    def setUp(self) -> None:
+        self.app = build_app("memory", web_root=str(WEB_ROOT))
+        self.console = self.app.console
+
+    def tearDown(self) -> None:
+        self.app.shutdown()
+
+    def _register(self, equipment_id: str, serial: str, model: str, slot_id: str = "", at: str = ""):
+        return dispatch(
+            self.console,
+            "POST",
+            "/api/registry/equipment",
+            {
+                "equipment_id": equipment_id,
+                "serial": serial,
+                "slot_id": slot_id,
+                "at": at,
+                "params": {
+                    "model": model,
+                    "manufacturer": "中联",
+                    "rated_capacity_t": 8,
+                    "jib_length_m": 55,
+                    "tip_capacity_t": 1.3,
+                    "mast_height_m": 45,
+                    "max_slew_speed_rpm": 0.8,
+                    "rated_wind_speed_ms": 20,
+                },
+            },
+        )
+
+    def test_register_swap_revise_and_point_in_time_lookup(self) -> None:
+        status, payload = self._register("eq-a", "SN-A", "QTZ80", slot_id="crane-1", at="2026-03-01T08:00:00Z")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["data"]["mounted_slot"], "crane-1")
+
+        # A second machine arrives; it cannot mount while crane-1 is occupied.
+        status, _ = self._register("eq-b", "SN-B", "QTZ125", slot_id="crane-1", at="2026-05-01T08:00:00Z")
+        self.assertEqual(status, 409)
+        status, _ = self._register("eq-b", "SN-B", "QTZ125", at="2026-05-01T08:00:00Z")
+        self.assertEqual(status, 200)
+
+        status, payload = dispatch(
+            self.console,
+            "POST",
+            "/api/registry/slot/swap",
+            {"slot_id": "crane-1", "equipment_id": "eq-b", "at": "2026-05-01T09:00:00Z"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["data"]["effective"]["equipment_id"], "eq-b")
+
+        # The new machine's parameters are adjusted while it runs.
+        status, payload = dispatch(
+            self.console,
+            "POST",
+            "/api/registry/equipment/revise",
+            {
+                "equipment_id": "eq-b",
+                "at": "2026-06-01T08:00:00Z",
+                "reason": "降速运行",
+                "params": {
+                    "model": "QTZ125",
+                    "manufacturer": "中联",
+                    "rated_capacity_t": 8,
+                    "jib_length_m": 55,
+                    "tip_capacity_t": 1.3,
+                    "mast_height_m": 45,
+                    "max_slew_speed_rpm": 0.5,
+                    "rated_wind_speed_ms": 18,
+                },
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["data"]["version"]["version_no"], 2)
+
+        # Point-in-time lookups answer "which dossier governed the slot then".
+        def effective(at: str):
+            request = Request("GET", "/api/registry/slot", {"id": ["crane-1"], "at": [at]}, {})
+            _, payload = self.console.dispatch(request)
+            return payload["data"]["effective"]
+
+        self.assertEqual(effective("2026-04-01T00:00:00Z")["equipment_id"], "eq-a")
+        self.assertEqual(effective("2026-04-01T00:00:00Z")["params"]["model"], "QTZ80")
+        self.assertEqual(effective("2026-05-15T00:00:00Z")["params"]["max_slew_speed_rpm"], 0.8)
+        self.assertEqual(effective("2026-06-15T00:00:00Z")["version_no"], 2)
+        self.assertEqual(effective("2026-06-15T00:00:00Z")["params"]["max_slew_speed_rpm"], 0.5)
+
+        # The journal and the audit trail both recorded every change.
+        request = Request("GET", "/api/registry/events", {"slot": ["crane-1"]}, {})
+        status, payload = self.console.dispatch(request)
+        self.assertEqual(status, 200)
+        actions = [entry["action"] for entry in payload["data"]]
+        self.assertEqual(actions, ["revise", "swap", "unmount", "register"])
+        request = Request("GET", "/api/audit", {"action": ["equipment-swap"]}, {})
+        _, payload = self.console.dispatch(request)
+        self.assertEqual(len(payload["data"]), 1)
+
+    def test_registry_endpoints_validate_input(self) -> None:
+        status, _ = dispatch(self.console, "POST", "/api/registry/equipment", {"serial": "SN-X"})
+        self.assertEqual(status, 400)
+        status, _ = dispatch(self.console, "POST", "/api/registry/slot/mount", {"slot_id": "crane-1"})
+        self.assertEqual(status, 400)
+        status, _ = dispatch(
+            self.console,
+            "POST",
+            "/api/registry/slot/mount",
+            {"slot_id": "crane-1", "equipment_id": "eq-ghost"},
+        )
+        self.assertEqual(status, 404)
+        status, _ = dispatch(self.console, "POST", "/api/registry/slot/unmount", {"slot_id": "crane-9"})
+        self.assertEqual(status, 409)
+        status, _ = dispatch(self.console, "GET", "/api/registry/equipment/detail")
+        self.assertEqual(status, 404)
+        request = Request("GET", "/api/registry/slot", {"id": ["crane-1"], "at": ["garbage"]}, {})
+        status, _ = self.console.dispatch(request)
+        self.assertEqual(status, 400)
+
+    def test_registry_survives_a_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = build_app(directory, web_root=str(WEB_ROOT))
+            dispatch(
+                first.console,
+                "POST",
+                "/api/registry/equipment",
+                {
+                    "equipment_id": "eq-a",
+                    "serial": "SN-A",
+                    "slot_id": "crane-1",
+                    "at": "2026-03-01T08:00:00Z",
+                    "params": {"model": "QTZ80", "rated_capacity_t": 8, "jib_length_m": 55,
+                               "tip_capacity_t": 1.3, "mast_height_m": 45,
+                               "max_slew_speed_rpm": 0.8, "rated_wind_speed_ms": 20},
+                },
+            )
+            first.shutdown()
+
+            second = build_app(directory, web_root=str(WEB_ROOT))
+            request = Request("GET", "/api/registry/slot", {"id": ["crane-1"]}, {})
+            status, payload = second.console.dispatch(request)
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["data"]["effective"]["equipment_id"], "eq-a")
+            self.assertEqual(payload["data"]["effective"]["params"]["model"], "QTZ80")
+            second.shutdown()
+
+
 class HttpServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = build_app("memory", web_root=str(WEB_ROOT))

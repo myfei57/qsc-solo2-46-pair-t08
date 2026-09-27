@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from . import cluster as fleet
 from . import limit as limit_module
+from . import registry as registry_module
 from . import slew as slew_module
 from . import zone as zone_module
 from .config import config_view
@@ -203,6 +204,7 @@ def state_view(console: "Console") -> dict[str, object]:
         "crane": crane_view(console),
         "load": load_view(console),
         "config": config_view(console.config, console.cluster),
+        "registry": registry_module.registry_view(console.registry),
         "audit": console.audit.count(),
         "audit_capacity": console.audit.capacity,
         "alarms": alarm_count,

@@ -74,6 +74,9 @@ async function refresh() {
   const audit = await api("/api/audit?limit=15");
   $("audit-data").textContent = JSON.stringify(audit.data || [], null, 2);
   $("overview-log").textContent = JSON.stringify((audit.data || []).slice(0, 5), null, 2);
+  $("registry-data").textContent = JSON.stringify(data.registry || {}, null, 2);
+  const registryEvents = await api("/api/registry/events?limit=20");
+  $("registry-events").textContent = JSON.stringify(registryEvents.data || [], null, 2);
 }
 
 document.querySelectorAll("#nav button").forEach((button) => {
@@ -170,6 +173,72 @@ $("slew-recover-btn").addEventListener("click", async () => {
 $("config-save-btn").addEventListener("click", async () => {
   await post("/api/config", { site_name: "华东三号工地", safe_separation: 15 });
   refresh();
+});
+
+const craneParams = (overrides) => Object.assign({
+  model: "QTZ80",
+  manufacturer: "中联",
+  rated_capacity_t: 8,
+  jib_length_m: 55,
+  tip_capacity_t: 1.3,
+  mast_height_m: 45,
+  max_slew_speed_rpm: 0.8,
+  rated_wind_speed_ms: 20,
+}, overrides || {});
+
+$("reg-register-a-btn").addEventListener("click", async () => {
+  const result = await post("/api/registry/equipment", {
+    equipment_id: "eq-a",
+    serial: "SN-A-001",
+    slot_id: "crane-1",
+    slot_name: "一号机位",
+    at: "2026-03-01T08:00:00Z",
+    reason: "首台塔吊进场建档",
+    params: craneParams({ model: "QTZ80" }),
+  });
+  $("registry-history").textContent = JSON.stringify(result, null, 2);
+  refresh();
+});
+
+$("reg-swap-b-btn").addEventListener("click", async () => {
+  await post("/api/registry/equipment", {
+    equipment_id: "eq-b",
+    serial: "SN-B-002",
+    at: "2026-05-01T08:00:00Z",
+    reason: "新塔吊进场建档",
+    params: craneParams({ model: "QTZ125", rated_capacity_t: 10, tip_capacity_t: 2, jib_length_m: 60 }),
+  });
+  const result = await post("/api/registry/slot/swap", {
+    slot_id: "crane-1",
+    equipment_id: "eq-b",
+    at: "2026-05-01T09:00:00Z",
+    reason: "老塔退场，QTZ125 换入一号机位",
+  });
+  $("registry-history").textContent = JSON.stringify(result, null, 2);
+  refresh();
+});
+
+$("reg-revise-btn").addEventListener("click", async () => {
+  const result = await post("/api/registry/equipment/revise", {
+    equipment_id: "eq-b",
+    at: "2026-06-01T08:00:00Z",
+    reason: "高温季降速运行",
+    params: craneParams({
+      model: "QTZ125",
+      rated_capacity_t: 10,
+      tip_capacity_t: 2,
+      jib_length_m: 60,
+      max_slew_speed_rpm: 0.5,
+      rated_wind_speed_ms: 18,
+    }),
+  });
+  $("registry-history").textContent = JSON.stringify(result, null, 2);
+  refresh();
+});
+
+$("reg-history-btn").addEventListener("click", async () => {
+  const result = await api("/api/registry/slot?id=crane-1&at=2026-04-01T00:00:00Z");
+  $("registry-history").textContent = JSON.stringify(result, null, 2);
 });
 
 setInterval(refresh, 3000);

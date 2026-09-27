@@ -89,3 +89,31 @@ class StaleRelease(LimitError):
 
 class ConfigError(CraneFleetError):
     """Raised when a site configuration payload is invalid."""
+
+
+class RegistryError(CraneFleetError):
+    """Base class for equipment registry failures."""
+
+
+class RegistryValidationError(RegistryError):
+    """Raised when an equipment payload or timestamp fails validation."""
+
+
+class EquipmentExists(RegistryError):
+    """Raised when a registered equipment id or serial number is already on file."""
+
+
+class EquipmentNotFound(RegistryError):
+    """Raised when an operation references an unregistered equipment record."""
+
+
+class SlotOccupied(RegistryError):
+    """Raised when a machine is mounted onto a slot that already runs one."""
+
+
+class SlotEmpty(RegistryError):
+    """Raised when an empty slot is asked to swap or unmount."""
+
+
+class EquipmentMountedElsewhere(RegistryError):
+    """Raised when a mounted machine is assigned to a second slot."""

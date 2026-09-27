@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import cluster as fleet
 from . import config as site_config
+from . import registry as registry_module
 from . import slew as slew_module
 from . import zone as zone_module
 from .audit import Audit, AuditEntry
@@ -42,6 +43,7 @@ class App:
 
         self.audit.record("system", "shutdown", "control service stopping")
         flush_audit(self.store, self.audit)
+        registry_module.persist(self.console.registry, self.store)
         site_config.save_config(self.store, self.console.config)
         if self.snapshot_path is not None:
             self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +86,9 @@ def build_app(data_dir: str = "data", web_root: str = "web") -> App:
     cranes = {"crane-1": Crane("crane-1")}
     config = site_config.load_config(store)
 
+    registry = registry_module.EquipmentRegistry()
+    registry_module.restore(registry, store)
+
     console = Console(
         store=store,
         cluster=cluster,
@@ -97,6 +102,7 @@ def build_app(data_dir: str = "data", web_root: str = "web") -> App:
         cranes=cranes,
         feedback=feedback,
         config=config,
+        registry=registry,
         web_root=web_root,
     )
     audit.record("system", "boot", "control service started")

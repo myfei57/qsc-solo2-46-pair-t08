@@ -16,6 +16,7 @@ from . import config as site_config
 from . import crane as crane_module
 from . import hoist as hoist_module
 from . import limit as limit_module
+from . import registry as registry_module
 from . import slew as slew_module
 from . import trolley as trolley_module
 from . import views
@@ -27,13 +28,19 @@ from .config import ConfigError, SiteConfig
 from .crane import Crane
 from .errors import (
     CraneFleetError,
+    EquipmentExists,
+    EquipmentMountedElsewhere,
+    EquipmentNotFound,
     FeedbackNotConfirmed,
     HoistBusy,
     HookNotLowered,
+    RegistryValidationError,
     SlewBlocked,
     SlewBusy,
     SlewIdle,
     SlewStopNotAcknowledged,
+    SlotEmpty,
+    SlotOccupied,
     StoreError,
     ZoneNotDurable,
 )
@@ -95,6 +102,7 @@ class Console:
         cranes: dict[str, Crane],
         feedback: SpeedFeedback,
         config: SiteConfig,
+        registry: registry_module.EquipmentRegistry | None = None,
         web_root: str = "web",
     ) -> None:
         self.store = store
@@ -109,6 +117,7 @@ class Console:
         self.cranes = cranes
         self.feedback = feedback
         self.config = config
+        self.registry = registry if registry is not None else registry_module.EquipmentRegistry()
         self.web_root = web_root
         self.ramp = Ramp()
         self.drum = Drum(0.8)
@@ -145,6 +154,16 @@ class Console:
             ("GET", "/api/config"): self.handle_config,
             ("POST", "/api/config"): self.handle_config_save,
             ("GET", "/api/audit"): self.handle_audit,
+            ("GET", "/api/registry"): self.handle_registry,
+            ("GET", "/api/registry/events"): self.handle_registry_events,
+            ("POST", "/api/registry/equipment"): self.handle_equipment_register,
+            ("GET", "/api/registry/equipment"): self.handle_equipment_list,
+            ("GET", "/api/registry/equipment/detail"): self.handle_equipment_detail,
+            ("POST", "/api/registry/equipment/revise"): self.handle_equipment_revise,
+            ("POST", "/api/registry/slot/mount"): self.handle_slot_mount,
+            ("POST", "/api/registry/slot/swap"): self.handle_slot_swap,
+            ("POST", "/api/registry/slot/unmount"): self.handle_slot_unmount,
+            ("GET", "/api/registry/slot"): self.handle_slot_state,
         }
 
     @property
@@ -474,6 +493,226 @@ class Console:
         else:
             entries = self.audit.query(crane_id, limit)
         return 200, ok([entry.to_dict() for entry in entries])
+
+    # -------------------------------------------------------------- registry
+
+    def handle_registry(self, request: Request) -> tuple[int, dict[str, Any]]:
+        return 200, ok(registry_module.registry_view(self.registry))
+
+    def handle_registry_events(self, request: Request) -> tuple[int, dict[str, Any]]:
+        events = registry_module.query_events(
+            self.registry,
+            slot_id=request.query_first("slot") or "",
+            equipment_id=request.query_first("equipment") or "",
+            action=request.query_first("action") or "",
+            limit=_positive_int(request.query_first("limit"), 50),
+        )
+        return 200, ok([event.to_dict() for event in events])
+
+    def handle_equipment_list(self, request: Request) -> tuple[int, dict[str, Any]]:
+        equipment = []
+        for equipment_id in self.registry.equipment_ids():
+            view = registry_module.equipment_view(self.registry, equipment_id)
+            if view is not None:
+                equipment.append(view)
+        return 200, ok(equipment)
+
+    def handle_equipment_detail(self, request: Request) -> tuple[int, dict[str, Any]]:
+        equipment_id = request.query_first("id") or ""
+        view = registry_module.equipment_view(self.registry, equipment_id)
+        if view is None:
+            return 404, fail("equipment not found")
+        return 200, ok(view)
+
+    def handle_equipment_register(self, request: Request) -> tuple[int, dict[str, Any]]:
+        if not request.body_valid:
+            return 400, fail("bad request")
+        params = _params_payload(request.body)
+        if params is None:
+            return 400, fail("bad request")
+        try:
+            record, event = registry_module.register_equipment(
+                self.registry,
+                params,
+                equipment_id=str(request.body.get("equipment_id") or ""),
+                serial=str(request.body.get("serial") or ""),
+                slot_id=str(request.body.get("slot_id") or ""),
+                slot_name=str(request.body.get("slot_name") or ""),
+                at=str(request.body.get("at") or ""),
+                operator=str(request.body.get("operator") or ""),
+                reason=str(request.body.get("reason") or ""),
+            )
+        except (RegistryValidationError, EquipmentExists, SlotOccupied) as exc:
+            return _registry_status(exc), fail(str(exc))
+        registry_module.persist(self.registry, self.store)
+        self.audit.record(event.equipment_id, "equipment-register", _event_detail(event))
+        if event.slot_id:
+            self.audit.record(event.equipment_id, "equipment-mount", _event_detail(event))
+        return 200, ok(registry_module.equipment_view(self.registry, record.equipment_id))
+
+    def handle_equipment_revise(self, request: Request) -> tuple[int, dict[str, Any]]:
+        if not request.body_valid:
+            return 400, fail("bad request")
+        params = _params_payload(request.body)
+        if params is None:
+            return 400, fail("bad request")
+        equipment_id = str(request.body.get("equipment_id") or "")
+        if not equipment_id:
+            return 400, fail("equipment_id required")
+        try:
+            version, event, assignment = registry_module.revise_params(
+                self.registry,
+                equipment_id,
+                params,
+                at=str(request.body.get("at") or ""),
+                operator=str(request.body.get("operator") or ""),
+                reason=str(request.body.get("reason") or ""),
+            )
+        except (RegistryValidationError, EquipmentNotFound) as exc:
+            return _registry_status(exc), fail(str(exc))
+        registry_module.persist(self.registry, self.store)
+        self.audit.record(equipment_id, "equipment-revise", _event_detail(event))
+        return 200, ok(
+            {
+                "version": version.to_dict(),
+                "assignment": assignment.to_dict() if assignment else None,
+                "equipment": registry_module.equipment_view(self.registry, equipment_id),
+            }
+        )
+
+    def handle_slot_mount(self, request: Request) -> tuple[int, dict[str, Any]]:
+        if not request.body_valid:
+            return 400, fail("bad request")
+        slot_id = str(request.body.get("slot_id") or "")
+        equipment_id = str(request.body.get("equipment_id") or "")
+        if not slot_id or not equipment_id:
+            return 400, fail("slot_id and equipment_id required")
+        try:
+            _assignment, event = registry_module.mount_equipment(
+                self.registry,
+                slot_id,
+                equipment_id,
+                slot_name=str(request.body.get("slot_name") or ""),
+                version_no=_int_or_zero(request.body.get("version_no")),
+                at=str(request.body.get("at") or ""),
+                operator=str(request.body.get("operator") or ""),
+                reason=str(request.body.get("reason") or ""),
+            )
+        except (
+            RegistryValidationError,
+            EquipmentNotFound,
+            EquipmentMountedElsewhere,
+            SlotOccupied,
+        ) as exc:
+            return _registry_status(exc), fail(str(exc))
+        registry_module.persist(self.registry, self.store)
+        self.audit.record(equipment_id, "equipment-mount", _event_detail(event))
+        return 200, ok(registry_module.slot_view(self.registry, slot_id))
+
+    def handle_slot_swap(self, request: Request) -> tuple[int, dict[str, Any]]:
+        if not request.body_valid:
+            return 400, fail("bad request")
+        slot_id = str(request.body.get("slot_id") or "")
+        equipment_id = str(request.body.get("equipment_id") or "")
+        if not slot_id or not equipment_id:
+            return 400, fail("slot_id and equipment_id required")
+        try:
+            events, assignment = registry_module.swap_equipment(
+                self.registry,
+                slot_id,
+                equipment_id,
+                slot_name=str(request.body.get("slot_name") or ""),
+                version_no=_int_or_zero(request.body.get("version_no")),
+                at=str(request.body.get("at") or ""),
+                operator=str(request.body.get("operator") or ""),
+                reason=str(request.body.get("reason") or ""),
+            )
+        except (
+            RegistryValidationError,
+            EquipmentNotFound,
+            EquipmentMountedElsewhere,
+            SlotEmpty,
+        ) as exc:
+            return _registry_status(exc), fail(str(exc))
+        registry_module.persist(self.registry, self.store)
+        for event in events:
+            action = "equipment-unmount" if event.action == registry_module.ACTION_UNMOUNT else "equipment-swap"
+            self.audit.record(event.equipment_id, action, _event_detail(event))
+        return 200, ok(registry_module.slot_view(self.registry, slot_id))
+
+    def handle_slot_unmount(self, request: Request) -> tuple[int, dict[str, Any]]:
+        if not request.body_valid:
+            return 400, fail("bad request")
+        slot_id = str(request.body.get("slot_id") or "")
+        if not slot_id:
+            return 400, fail("slot_id required")
+        try:
+            assignment, event = registry_module.unmount_equipment(
+                self.registry,
+                slot_id,
+                at=str(request.body.get("at") or ""),
+                operator=str(request.body.get("operator") or ""),
+                reason=str(request.body.get("reason") or ""),
+            )
+        except (RegistryValidationError, SlotEmpty) as exc:
+            return _registry_status(exc), fail(str(exc))
+        registry_module.persist(self.registry, self.store)
+        self.audit.record(assignment.equipment_id, "equipment-unmount", _event_detail(event))
+        return 200, ok(registry_module.slot_view(self.registry, slot_id))
+
+    def handle_slot_state(self, request: Request) -> tuple[int, dict[str, Any]]:
+        slot_id = request.query_first("id") or ""
+        if not slot_id:
+            return 400, fail("id required")
+        at = request.query_first("at") or ""
+        try:
+            view = registry_module.slot_view(self.registry, slot_id, at)
+        except RegistryValidationError as exc:
+            return 400, fail(str(exc))
+        return 200, ok(view)
+
+
+def _registry_status(exc: Exception) -> int:
+    """Map registry failures onto HTTP status codes."""
+
+    if isinstance(exc, EquipmentNotFound):
+        return 404
+    if isinstance(exc, (SlotOccupied, SlotEmpty, EquipmentMountedElsewhere)):
+        return 409
+    return 400
+
+
+def _event_detail(event: registry_module.RegistryEvent) -> str:
+    parts = [
+        f"seq={event.seq}",
+        f"action={event.action}",
+        f"at={event.at}",
+        f"v{event.version_no}",
+    ]
+    if event.slot_id:
+        parts.append(f"slot={event.slot_id}")
+    if event.operator:
+        parts.append(f"by={event.operator}")
+    if event.reason:
+        parts.append(event.reason)
+    return " ".join(parts)
+
+
+def _params_payload(body: dict[str, Any]) -> dict[str, Any] | None:
+    raw = body.get("params")
+    if isinstance(raw, dict):
+        return raw
+    # Also accept a flat parameter payload at the top level.
+    if "model" in body:
+        return body
+    return None
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _number(value: Any) -> float:

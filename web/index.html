@@ -15,6 +15,7 @@
       <button data-page="zones">防碰撞区</button>
       <button data-page="hoist">吊装</button>
       <button data-page="alarms">告警</button>
+      <button data-page="registry">设备档案</button>
       <button data-page="config">配置</button>
     </nav>
     <span class="status" id="conn-status">连接中…</span>
@@ -70,6 +71,20 @@
       </div>
       <h2>审计记录</h2>
       <pre id="audit-data"></pre>
+    </section>
+
+    <section id="page-registry" class="hidden">
+      <h2>设备档案与机位历史</h2>
+      <pre id="registry-data"></pre>
+      <div class="actions">
+        <button id="reg-register-a-btn">建档：QTZ80 上 crane-1</button>
+        <button id="reg-swap-b-btn">换机：QTZ125 换入 crane-1</button>
+        <button id="reg-revise-btn">改参：QTZ125 降速运行</button>
+        <button id="reg-history-btn">倒查：2026-04-01 当时档案</button>
+      </div>
+      <h2>变更流水</h2>
+      <pre id="registry-events"></pre>
+      <pre id="registry-history"></pre>
     </section>
 
     <section id="page-config" class="hidden">
