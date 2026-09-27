@@ -89,3 +89,19 @@ class StaleRelease(LimitError):
 
 class ConfigError(CraneFleetError):
     """Raised when a site configuration payload is invalid."""
+
+
+class ArchiveError(CraneFleetError):
+    """Base class for equipment-archive failures."""
+
+
+class ArchiveNotFound(ArchiveError):
+    """Raised when a crane (or revision) has no archive record."""
+
+
+class DuplicateArchive(ArchiveError):
+    """Raised when an already registered crane is registered again."""
+
+
+class InvalidEffectiveTime(ArchiveError):
+    """Raised when an effective_from value cannot be honoured."""

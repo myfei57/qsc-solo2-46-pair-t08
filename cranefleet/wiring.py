@@ -6,10 +6,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import archive as archive_module
 from . import cluster as fleet
 from . import config as site_config
 from . import slew as slew_module
 from . import zone as zone_module
+from .archive import ArchiveLedger
 from .audit import Audit, AuditEntry
 from .cluster import Cluster
 from .console import Console
@@ -43,6 +45,7 @@ class App:
         self.audit.record("system", "shutdown", "control service stopping")
         flush_audit(self.store, self.audit)
         site_config.save_config(self.store, self.console.config)
+        archive_module.persist(self.console.archive, self.store)
         if self.snapshot_path is not None:
             self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
             self.snapshot_path.write_bytes(encode_snapshot(self.store.snapshot()))
@@ -83,6 +86,8 @@ def build_app(data_dir: str = "data", web_root: str = "web") -> App:
     slew_module.restore_feedback(feedback, store)
     cranes = {"crane-1": Crane("crane-1")}
     config = site_config.load_config(store)
+    archive = ArchiveLedger()
+    archive_module.restore(archive, store)
 
     console = Console(
         store=store,
@@ -97,6 +102,7 @@ def build_app(data_dir: str = "data", web_root: str = "web") -> App:
         cranes=cranes,
         feedback=feedback,
         config=config,
+        archive=archive,
         web_root=web_root,
     )
     audit.record("system", "boot", "control service started")

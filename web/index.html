@@ -12,6 +12,7 @@
     <nav id="nav">
       <button data-page="overview" class="active">总览</button>
       <button data-page="cranes">机群</button>
+      <button data-page="archives">设备档案</button>
       <button data-page="zones">防碰撞区</button>
       <button data-page="hoist">吊装</button>
       <button data-page="alarms">告警</button>
@@ -35,8 +36,36 @@
       </div>
     </section>
 
-    <section id="page-zones" class="hidden">
-      <h2>防碰撞区状态</h2>
+    <section id="page-archives" class="hidden">
+      <h2>设备档案与换机记录</h2>
+      <pre id="archive-current"></pre>
+      <h2>历史版本（倒查）</h2>
+      <pre id="archive-history"></pre>
+      <h2>按时间倒查当时在用档案</h2>
+      <div class="actions">
+        <input type="text" id="archive-at" placeholder="2026-06-15T12:00:00+08:00" style="flex:1;min-width:260px;padding:8px;border-radius:6px;border:1px solid #cbd5e1;">
+        <button id="archive-effective-btn">倒查该时刻档案</button>
+      </div>
+      <pre id="archive-effective"></pre>
+      <h2>登记 / 变更</h2>
+      <pre id="archive-form-hint">机位 crane-1：首次接入登记、同机改参数、换机均在此提交（字段可留空沿用原值）</pre>
+      <div class="actions">
+        <input type="text" id="archive-model" placeholder="型号，如 QTZ80">
+        <input type="text" id="archive-serial" placeholder="出厂编号（登记/换机必填）">
+        <input type="text" id="archive-manufacturer" placeholder="厂家">
+        <input type="text" id="archive-capacity" placeholder="额定起重量 t">
+        <input type="text" id="archive-radius" placeholder="最大幅度 m">
+        <input type="text" id="archive-wind" placeholder="允许风速 m/s">
+        <input type="text" id="archive-effective" placeholder="生效时间（留空=现在）">
+      </div>
+      <div class="actions">
+        <button id="archive-register-btn">接入登记</button>
+        <button id="archive-amend-btn">同机改参数</button>
+        <button id="archive-replace-btn">换机（新设备接管）</button>
+      </div>
+    </section>
+
+    <section id="page-zones" class="hidden">      <h2>防碰撞区状态</h2>
       <pre id="zone-data"></pre>
       <div class="actions">
         <button id="occupy-a-btn">一号塔上报占用</button>

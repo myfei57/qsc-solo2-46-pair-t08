@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from . import archive as archive_module
 from . import cluster as fleet
 from . import limit as limit_module
 from . import slew as slew_module
@@ -203,6 +204,7 @@ def state_view(console: "Console") -> dict[str, object]:
         "crane": crane_view(console),
         "load": load_view(console),
         "config": config_view(console.config, console.cluster),
+        "archives": archive_module.ledger_view(console.archive),
         "audit": console.audit.count(),
         "audit_capacity": console.audit.capacity,
         "alarms": alarm_count,

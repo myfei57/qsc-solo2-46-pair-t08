@@ -172,5 +172,72 @@ $("config-save-btn").addEventListener("click", async () => {
   refresh();
 });
 
+// ------------------------------------------------------------- equipment archive
+async function refreshArchives() {
+  const result = await api("/api/archives/crane?crane_id=crane-1");
+  if (result.ok) {
+    $("archive-current").textContent = JSON.stringify(result.data.current, null, 2);
+    $("archive-history").textContent = JSON.stringify(result.data.history, null, 2);
+  } else {
+    $("archive-current").textContent = "尚未登记档案";
+    $("archive-history").textContent = "[]";
+  }
+}
+
+function archiveBody() {
+  const number = (value) => (value === "" ? undefined : Number(value));
+  return {
+    crane_id: "crane-1",
+    model: $("archive-model").value.trim(),
+    serial_number: $("archive-serial").value.trim(),
+    manufacturer: $("archive-manufacturer").value.trim(),
+    effective_from: $("archive-effective").value.trim(),
+    parameters: {
+      rated_capacity_t: number($("archive-capacity").value),
+      max_radius_m: number($("archive-radius").value),
+      max_wind_speed_mps: number($("archive-wind").value),
+    },
+  };
+}
+
+// Drop blank fields so amend requests carry only what actually changes.
+function compactArchiveBody() {
+  const body = archiveBody();
+  if (!body.model) delete body.model;
+  if (!body.serial_number) delete body.serial_number;
+  if (!body.manufacturer) delete body.manufacturer;
+  if (!body.effective_from) delete body.effective_from;
+  for (const key of Object.keys(body.parameters)) {
+    if (body.parameters[key] === undefined) delete body.parameters[key];
+  }
+  if (Object.keys(body.parameters).length === 0) delete body.parameters;
+  return body;
+}
+
+async function submitArchive(path) {
+  const body = path === "/api/archives/amend" ? compactArchiveBody() : archiveBody();
+  const result = await post(path, body);
+  $("archive-effective").textContent = result.ok
+    ? "已写入 rev " + result.data.seq
+    : "操作失败：" + (result.error || "bad request");
+  if (result.ok) await refreshArchives();
+}
+
+$("archive-register-btn").addEventListener("click", () => submitArchive("/api/archives/register"));
+$("archive-amend-btn").addEventListener("click", () => submitArchive("/api/archives/amend"));
+$("archive-replace-btn").addEventListener("click", () => submitArchive("/api/archives/replace"));
+
+$("archive-effective-btn").addEventListener("click", async () => {
+  const at = encodeURIComponent($("archive-at").value.trim());
+  const result = await api("/api/archives/effective?crane_id=crane-1&at=" + at);
+  $("archive-effective").textContent = JSON.stringify(
+    result.ok ? result.data : { error: result.error },
+    null,
+    2
+  );
+});
+
+refreshArchives();
+
 setInterval(refresh, 3000);
 refresh();

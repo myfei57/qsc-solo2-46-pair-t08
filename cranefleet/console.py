@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from . import archive as archive_module
 from . import cluster as fleet
 from . import config as site_config
 from . import crane as crane_module
@@ -21,15 +22,20 @@ from . import trolley as trolley_module
 from . import views
 from . import wind as wind_module
 from . import zone as zone_module
+from .archive import ArchiveLedger
 from .audit import Audit
 from .cluster import Cluster
 from .config import ConfigError, SiteConfig
 from .crane import Crane
 from .errors import (
+    ArchiveError,
+    ArchiveNotFound,
     CraneFleetError,
+    DuplicateArchive,
     FeedbackNotConfirmed,
     HoistBusy,
     HookNotLowered,
+    InvalidEffectiveTime,
     SlewBlocked,
     SlewBusy,
     SlewIdle,
@@ -95,6 +101,7 @@ class Console:
         cranes: dict[str, Crane],
         feedback: SpeedFeedback,
         config: SiteConfig,
+        archive: ArchiveLedger,
         web_root: str = "web",
     ) -> None:
         self.store = store
@@ -109,6 +116,7 @@ class Console:
         self.cranes = cranes
         self.feedback = feedback
         self.config = config
+        self.archive = archive
         self.web_root = web_root
         self.ramp = Ramp()
         self.drum = Drum(0.8)
@@ -145,6 +153,14 @@ class Console:
             ("GET", "/api/config"): self.handle_config,
             ("POST", "/api/config"): self.handle_config_save,
             ("GET", "/api/audit"): self.handle_audit,
+            ("GET", "/api/archives"): self.handle_archive_list,
+            ("POST", "/api/archives/register"): self.handle_archive_register,
+            ("GET", "/api/archives/crane"): self.handle_archive_get,
+            ("GET", "/api/archives/revision"): self.handle_archive_revision,
+            ("GET", "/api/archives/history"): self.handle_archive_history,
+            ("GET", "/api/archives/effective"): self.handle_archive_effective,
+            ("POST", "/api/archives/amend"): self.handle_archive_amend,
+            ("POST", "/api/archives/replace"): self.handle_archive_replace,
         }
 
     @property
@@ -474,6 +490,95 @@ class Console:
         else:
             entries = self.audit.query(crane_id, limit)
         return 200, ok([entry.to_dict() for entry in entries])
+
+    # ---------------------------------------------------------------- archive
+
+    def handle_archive_list(self, request: Request) -> tuple[int, dict[str, Any]]:
+        return 200, ok(archive_module.ledger_view(self.archive))
+
+    def handle_archive_get(self, request: Request) -> tuple[int, dict[str, Any]]:
+        crane_id = request.query_first("crane_id") or ""
+        if not crane_id:
+            return 400, fail("crane_id required")
+        try:
+            return 200, ok(archive_module.crane_archive_view(self.archive, crane_id))
+        except ArchiveNotFound:
+            return 404, fail("archive not found")
+
+    def handle_archive_revision(self, request: Request) -> tuple[int, dict[str, Any]]:
+        revision_id = request.query_first("revision_id") or ""
+        if not revision_id:
+            return 400, fail("revision_id required")
+        try:
+            revision = self.archive.revision(revision_id)
+        except ArchiveNotFound:
+            return 404, fail("revision not found")
+        return 200, ok(revision.to_dict())
+
+    def handle_archive_history(self, request: Request) -> tuple[int, dict[str, Any]]:
+        crane_id = request.query_first("crane_id") or ""
+        if not crane_id:
+            return 400, fail("crane_id required")
+        revisions = sorted(self.archive.revisions_for(crane_id), key=lambda item: item.seq)
+        if not revisions:
+            return 404, fail("archive not found")
+        return 200, ok([revision.to_dict() for revision in revisions])
+
+    def handle_archive_effective(self, request: Request) -> tuple[int, dict[str, Any]]:
+        crane_id = request.query_first("crane_id") or ""
+        at = request.query_first("at") or ""
+        if not crane_id:
+            return 400, fail("crane_id required")
+        if not at:
+            return 400, fail("at required (ISO-8601 timestamp)")
+        try:
+            moment = archive_module.parse_iso(at)
+            revision = self.archive.effective_at(crane_id, moment)
+        except InvalidEffectiveTime as exc:
+            return 400, fail(str(exc))
+        except ArchiveNotFound:
+            return 404, fail("no archive in force at that time")
+        return 200, ok(revision.to_dict())
+
+    def handle_archive_register(self, request: Request) -> tuple[int, dict[str, Any]]:
+        return self._archive_write(request, archive_module.register, "archive-register", "registered")
+
+    def handle_archive_amend(self, request: Request) -> tuple[int, dict[str, Any]]:
+        return self._archive_write(request, archive_module.amend, "archive-amend", "parameters amended")
+
+    def handle_archive_replace(self, request: Request) -> tuple[int, dict[str, Any]]:
+        return self._archive_write(request, archive_module.replace, "archive-replace", "equipment replaced")
+
+    def _archive_write(
+        self,
+        request: Request,
+        operation: Callable[[ArchiveLedger, str, dict[str, Any]], archive_module.ArchiveRevision],
+        action: str,
+        detail: str,
+    ) -> tuple[int, dict[str, Any]]:
+        if not request.body_valid:
+            return 400, fail("bad request")
+        crane_id = str(request.body.get("crane_id") or "")
+        if not crane_id:
+            return 400, fail("crane_id required")
+        try:
+            revision = operation(self.archive, crane_id, request.body)
+            archive_module.persist(self.archive, self.store)
+        except DuplicateArchive:
+            return 409, fail("crane already registered")
+        except ArchiveNotFound:
+            return 404, fail("archive not found")
+        except (ArchiveError, InvalidEffectiveTime) as exc:
+            return 400, fail(str(exc))
+        except StoreError as exc:
+            return 500, fail(str(exc))
+        self.audit.record(
+            crane_id,
+            action,
+            f"{detail}: rev={revision.seq} model={revision.model} "
+            f"serial={revision.serial_number} rev_id={revision.revision_id}",
+        )
+        return 200, ok(revision.to_dict())
 
 
 def _number(value: Any) -> float:
